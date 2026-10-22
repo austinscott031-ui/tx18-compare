@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TX-18 Boundary Comparison</title>
+<meta name="description" content="Interactive satellite map comparing Texas's 18th Congressional District in the 119th Congress with the new boundaries that take effect in January 2027.">
+<meta property="og:title" content="TX-18 Boundary Comparison">
+<meta property="og:description" content="Current vs. new (2027) boundaries of Texas's 18th Congressional District on a satellite map.">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="tx18-119.js"></script>
+<script src="tx18-120.js"></script>
+<script src="tx18-overlap.js"></script>
+<style>
+  :root {
+    --c119: #FFD23F;   /* 119th Congress (current, 2021 plan) */
+    --c120: #3D8BFF;   /* 120th Congress (2025 plan, from Jan 2027) */
+    --cshared: #9BEA8A; /* area inside both districts (Both view only) */
+    --panel: rgba(14, 16, 22, .86);
+    --ink: #f4f4f5;
+    --muted: #a1a1aa;
+    --line: rgba(255, 255, 255, .14);
+  }
+  html, body { margin: 0; height: 100%; background: #0e1016; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #map { position: absolute; inset: 0; background: #0e1016; }
+
+  .panel {
+    position: absolute; top: 16px; left: 16px; z-index: 1000; width: 290px; max-width: calc(100% - 32px); box-sizing: border-box;
+    background: var(--panel); color: var(--ink); backdrop-filter: blur(8px);
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .panel h1 { margin: 0; font-size: 17px; }
+  .panel .sub { margin-top: 3px; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+
+  .views { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .views button {
+    font: inherit; font-size: 12.5px; padding: 7px 4px; cursor: pointer;
+    background: transparent; color: var(--ink); border: 0; border-left: 1px solid var(--line);
+  }
+  .views button:first-child { border-left: 0; }
+  .views button[aria-pressed="true"] { background: var(--ink); color: #111; font-weight: 600; }
+  .views button:focus-visible, .toggle input:focus-visible { outline: 2px solid var(--c120); outline-offset: 2px; }
+
+  .legend { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+  .legend .item { display: flex; align-items: center; gap: 8px; transition: opacity .15s; }
+  .legend .item.off { opacity: .35; }
+  .legend .item[hidden] { display: none; }
+  .swatch { width: 18px; height: 12px; border-radius: 2px; border: 2px solid; box-sizing: border-box; flex: none; }
+  .s119 { border-color: var(--c119); background: color-mix(in srgb, var(--c119) 30%, transparent); }
+  .s120 { border-color: var(--c120); background: color-mix(in srgb, var(--c120) 30%, transparent); }
+  .sshared { border-color: var(--cshared); background: color-mix(in srgb, var(--cshared) 65%, transparent); }
+  .legend small { color: var(--muted); }
+
+  .toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
+  .src { font-size: 11px; color: #71717a; line-height: 1.4; }
+
+  /* Phones: compact panel docked along the bottom so the map stays visible. */
+  @media (max-width: 600px) {
+    .panel { top: auto; bottom: 28px; left: 12px; right: 12px; width: auto; max-width: none; padding: 12px 14px; gap: 10px; }
+    .panel h1 { font-size: 15px; }
+    .panel .sub, .panel .src { display: none; }
+    .legend { gap: 4px; font-size: 12px; }
+  }
+
+  /* Export mode: no controls, just a compact legend in the corner. */
+  body.export .panel { width: auto; gap: 8px; padding: 12px 14px; }
+  body.export .views, body.export .toggle, body.export .src, body.export .sub { display: none; }
+  body.export .leaflet-control-zoom { display: none; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <div>
+    <h1>Texas's 18th District</h1>
+    <div class="sub">Current boundaries vs. the new boundaries that take effect in January 2027.</div>
+  </div>
+  <div class="views" role="group" aria-label="Boundaries shown">
+    <button id="view-both" data-view="both">Both</button>
+    <button id="view-119" data-view="119">119th</button>
+    <button id="view-120" data-view="120">120th</button>
+  </div>
+  <div class="legend">
+    <div class="item" data-layer="119"><span class="swatch s119"></span><span>119th Congress <small>· current (2021 plan)</small></span></div>
+    <div class="item" data-layer="120"><span class="swatch s120"></span><span>120th Congress <small>· from Jan 2027 (2025 plan)</small></span></div>
+    <div class="item" data-layer="shared"><span class="swatch sshared"></span><span>Shared area <small>· included in both districts</small></span></div>
+  </div>
+  <label class="toggle"><input type="checkbox" id="labels" checked> Place and road labels</label>
+  <div class="src">Boundaries: U.S. Census Bureau TIGERweb (119th and 120th Congressional Districts, GEOID 4818). Imagery: Esri World Imagery.</div>
+</div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const exporting = params.has('export');
+  if (exporting) document.body.classList.add('export');
+  // ?export&w=1080&h=1350 fixes the map to an exact size for image export.
+  if (exporting && params.has('w') && params.has('h')) {
+    Object.assign(document.getElementById('map').style,
+      { right: 'auto', bottom: 'auto', width: params.get('w') + 'px', height: params.get('h') + 'px' });
+  }
+
+  const css = getComputedStyle(document.documentElement);
+  const COLORS = { 119: css.getPropertyValue('--c119').trim(), 120: css.getPropertyValue('--c120').trim(),
+    shared: css.getPropertyValue('--cshared').trim() };
+  const FILL_OPACITY = 0.22;
+
+  const map = L.map('map', { zoomSnap: 0.25, zoomControl: false });
+  if (!exporting) L.control.zoom({ position: 'topright' }).addTo(map);
+  const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+  const imagery = L.tileLayer(esri + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, attribution: 'Boundaries: U.S. Census Bureau · Imagery © Esri, Maxar, Earthstar Geographics',
+  }).addTo(map);
+  const labels = L.layerGroup([
+    L.tileLayer(esri + 'Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, opacity: 0.8 }),
+    L.tileLayer(esri + 'Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }),
+  ]);
+
+  const districtLayer = (data, color) => L.geoJSON(data, {
+    style: { color, weight: 3, opacity: 1, fillColor: color, fillOpacity: FILL_OPACITY, lineJoin: 'round' },
+  });
+  // Both view: fills come from this split (each district's own part, plus the shared part in green)
+  // so the overlap reads as one clear color; the district layers then draw outlines only.
+  const PART_FILLS = { only119: [COLORS[119], FILL_OPACITY], only120: [COLORS[120], FILL_OPACITY], shared: [COLORS.shared, 0.5] };
+  const overlap = L.geoJSON(window.TX18_OVERLAP, {
+    style: f => ({ stroke: false, fillColor: PART_FILLS[f.properties.part][0], fillOpacity: PART_FILLS[f.properties.part][1] }),
+  });
+  // 120th drawn first so the current (119th) outline sits on top where they coincide.
+  const districts = { 120: districtLayer(window.TX18_120, COLORS[120]), 119: districtLayer(window.TX18_119, COLORS[119]) };
+
+  const VIEWS = { both: ['120', '119'], 119: ['119'], 120: ['120'] };
+  let current;
+  function setView(view, { fit = true } = {}) {
+    if (!VIEWS[view]) view = 'both';
+    current = view;
+    Object.entries(districts).forEach(([k, layer]) => {
+      const on = VIEWS[view].includes(k);
+      on ? layer.addTo(map) : layer.remove();
+      document.querySelector(`.legend [data-layer="${k}"]`).classList.toggle('off', !on);
+      // In export mode the legend lists only what's drawn.
+      if (exporting) document.querySelector(`.legend [data-layer="${k}"]`).hidden = !on;
+    });
+    const both = view === 'both';
+    both ? overlap.addTo(map) : overlap.remove();
+    Object.values(districts).forEach(layer => layer.setStyle({ fillOpacity: both ? 0 : FILL_OPACITY }));
+    overlap.bringToBack();
+    districts[119].bringToFront();
+    document.querySelector('.legend [data-layer="shared"]').hidden = !both;
+    document.querySelectorAll('.views button').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === view));
+    if (fit) {
+      const bounds = L.latLngBounds([]);
+      VIEWS[view].forEach(k => bounds.extend(districts[k].getBounds()));
+      // Keep the districts clear of the panel: beside it on wide screens, above it on phones.
+      const panel = document.querySelector('.panel').getBoundingClientRect();
+      const opts = exporting ? { padding: [40, 40] }
+        : innerWidth <= 600 ? { paddingTopLeft: [20, 20], paddingBottomRight: [20, innerHeight - panel.top + 16] }
+        : { paddingTopLeft: [panel.right + 24, 40], paddingBottomRight: [40, 40] };
+      map.fitBounds(bounds, opts);
+    }
+    try { history.replaceState(null, '', '?' + new URLSearchParams({ ...Object.fromEntries(params), view })); } catch {}
+  }
+
+  function setLabels(on) {
+    on ? labels.addTo(map) : labels.remove();
+    document.getElementById('labels').checked = on;
+  }
+
+  document.querySelectorAll('.views button').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
+  document.getElementById('labels').addEventListener('change', e => setLabels(e.target.checked));
+
+  setLabels(params.get('labels') !== '0');
+  setView(params.get('view') || 'both');
+
+  // Export script waits for this flag: set once every visible tile has loaded.
+  if (exporting) {
+    const tileLayers = [imagery, ...labels.getLayers()].filter(l => map.hasLayer(l));
+    let pending = tileLayers.length;
+    tileLayers.forEach(l => l.once('load', () => { if (--pending === 0) setTimeout(() => document.body.dataset.ready = '1', 500); }));
+  }
+</script>
+</body>
+</html>
