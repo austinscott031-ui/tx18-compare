@@ -54,6 +54,46 @@
   .legend small { color: var(--muted); }
 
   .toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
+
+  /* Address check */
+  .search { position: relative; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .field { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: rgba(255,255,255,.06); }
+  .field input {
+    flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 8px 10px; border: 0; outline: 0;
+    background: transparent; color: var(--ink);
+  }
+  .field input::placeholder { color: var(--muted); }
+  .field input::-webkit-search-cancel-button { filter: invert(1); }
+  .field:focus-within { border-color: var(--c120); }
+  .field button {
+    font: inherit; font-size: 12.5px; font-weight: 600; padding: 0 12px; border: 0; cursor: pointer;
+    background: var(--ink); color: #111;
+  }
+  .field button:focus-visible { outline: 2px solid var(--c120); outline-offset: -2px; }
+  .suggest {
+    position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 2; margin: 0; padding: 4px 0; list-style: none;
+    background: #1b1e27; border: 1px solid var(--line); border-radius: 7px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    max-height: 240px; overflow-y: auto;
+  }
+  .suggest li { padding: 7px 10px; font-size: 12.5px; cursor: pointer; line-height: 1.35; }
+  .suggest li[aria-selected="true"], .suggest li:hover { background: rgba(255,255,255,.1); }
+
+  .result { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 8px; background: rgba(255,255,255,.06); border: 1px solid var(--line); }
+  .result[hidden] { display: none; }
+  .result .addr { font-size: 12.5px; font-weight: 600; line-height: 1.35; }
+  .result .row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .result .row .name { flex: 1; min-width: 0; }
+  .badge { font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .badge.in { background: #22c55e; color: #052e14; }
+  .badge.out { background: rgba(255,255,255,.14); color: var(--ink); }
+  .result .note { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+  .result .msg { font-size: 12.5px; line-height: 1.4; }
+  .result button.clear {
+    align-self: flex-start; font: inherit; font-size: 12px; padding: 0; border: 0; background: none; color: var(--muted);
+    text-decoration: underline; cursor: pointer;
+  }
+  .pin { width: 18px; height: 18px; border-radius: 50%; background: #fff; border: 4px solid #111; box-shadow: 0 0 0 3px rgba(255,255,255,.6), 0 2px 8px rgba(0,0,0,.5); box-sizing: border-box; }
   .src { font-size: 11px; color: #71717a; line-height: 1.4; }
 
   /* Phones: compact panel docked along the bottom so the map stays visible. */
@@ -62,11 +102,13 @@
     .panel h1 { font-size: 15px; }
     .panel .sub, .panel .src { display: none; }
     .legend { gap: 4px; font-size: 12px; }
+    .suggest { top: auto; bottom: calc(100% + 4px); }
   }
 
   /* Export mode: no controls, just a compact legend in the corner. */
   body.export .panel { width: auto; gap: 8px; padding: 12px 14px; }
-  body.export .views, body.export .toggle, body.export .src, body.export .sub { display: none; }
+  body.export .views, body.export .toggle, body.export .src, body.export .sub,
+  body.export .search, body.export .result { display: none; }
   body.export .leaflet-control-zoom { display: none; }
 </style>
 </head>
@@ -77,6 +119,16 @@
     <h1>Texas's 18th District</h1>
     <div class="sub">Current boundaries vs. the new boundaries that take effect in January 2027.</div>
   </div>
+  <form class="search" id="search" role="search" autocomplete="off">
+    <label for="addr" class="sr">Check an address</label>
+    <div class="field">
+      <input id="addr" type="search" placeholder="Check an address…" enterkeyhint="search"
+        role="combobox" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false">
+      <button type="submit">Check</button>
+    </div>
+    <ul id="suggest" class="suggest" role="listbox" hidden></ul>
+  </form>
+  <div id="result" class="result" aria-live="polite" hidden></div>
   <div class="views" role="group" aria-label="Boundaries shown">
     <button id="view-both" data-view="both">Both</button>
     <button id="view-119" data-view="119">119th</button>
@@ -88,7 +140,7 @@
     <div class="item" data-layer="shared"><span class="swatch sshared"></span><span>Shared area <small>· included in both districts</small></span></div>
   </div>
   <label class="toggle"><input type="checkbox" id="labels" checked> Place and road labels</label>
-  <div class="src">Boundaries: U.S. Census Bureau TIGERweb (119th and 120th Congressional Districts, GEOID 4818). Imagery: Esri World Imagery.</div>
+  <div class="src">Boundaries: U.S. Census Bureau TIGERweb (119th and 120th Congressional Districts, GEOID 4818). Imagery and address lookup: Esri.</div>
 </div>
 <script>
   const params = new URLSearchParams(location.search);
@@ -128,6 +180,14 @@
   // 120th drawn first so the current (119th) outline sits on top where they coincide.
   const districts = { 120: districtLayer(window.TX18_120, COLORS[120]), 119: districtLayer(window.TX18_119, COLORS[119]) };
 
+  // Keep what's being shown clear of the panel: beside it on wide screens, above it on phones.
+  function fitPadding() {
+    const panel = document.querySelector('.panel').getBoundingClientRect();
+    return exporting ? { padding: [40, 40] }
+      : innerWidth <= 600 ? { paddingTopLeft: [20, 20], paddingBottomRight: [20, innerHeight - panel.top + 16] }
+      : { paddingTopLeft: [panel.right + 24, 40], paddingBottomRight: [40, 40] };
+  }
+
   const VIEWS = { both: ['120', '119'], 119: ['119'], 120: ['120'] };
   let current;
   function setView(view, { fit = true } = {}) {
@@ -150,12 +210,7 @@
     if (fit) {
       const bounds = L.latLngBounds([]);
       VIEWS[view].forEach(k => bounds.extend(districts[k].getBounds()));
-      // Keep the districts clear of the panel: beside it on wide screens, above it on phones.
-      const panel = document.querySelector('.panel').getBoundingClientRect();
-      const opts = exporting ? { padding: [40, 40] }
-        : innerWidth <= 600 ? { paddingTopLeft: [20, 20], paddingBottomRight: [20, innerHeight - panel.top + 16] }
-        : { paddingTopLeft: [panel.right + 24, 40], paddingBottomRight: [40, 40] };
-      map.fitBounds(bounds, opts);
+      map.fitBounds(bounds, fitPadding());
     }
     try { history.replaceState(null, '', '?' + new URLSearchParams({ ...Object.fromEntries(params), view })); } catch {}
   }
@@ -167,6 +222,117 @@
 
   document.querySelectorAll('.views button').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
   document.getElementById('labels').addEventListener('change', e => setLabels(e.target.checked));
+
+  // ---- Address check: Esri geocoder (free, no key, allows browser requests) + point-in-polygon ----
+  const GEOCODER = 'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/';
+  const HOUSTON = '-95.37,29.76'; // biases suggestions toward Houston
+  const form = document.getElementById('search');
+  const input = document.getElementById('addr');
+  const list = document.getElementById('suggest');
+  const result = document.getElementById('result');
+  let pin, suggestions = [], active = -1, suggestTimer, suggestAbort;
+
+  // Ray-casting test; handles holes and multi-part districts.
+  const inRing = ([x, y], ring) => {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+  const inDistrict = (pt, fc) => fc.features.some(({ geometry: g }) =>
+    (g.type === 'Polygon' ? [g.coordinates] : g.coordinates)
+      .some(([outer, ...holes]) => inRing(pt, outer) && !holes.some(h => inRing(pt, h))));
+
+  const esc = (t) => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function showList(items) {
+    suggestions = items; active = -1;
+    list.innerHTML = items.map((s, i) => `<li role="option" id="sug-${i}" aria-selected="false">${esc(s.text)}</li>`).join('');
+    list.hidden = !items.length;
+    input.setAttribute('aria-expanded', String(!!items.length));
+  }
+  function highlight(i) {
+    active = i;
+    [...list.children].forEach((li, k) => li.setAttribute('aria-selected', String(k === i)));
+    input.setAttribute('aria-activedescendant', i > -1 ? `sug-${i}` : '');
+  }
+
+  input.addEventListener('input', () => {
+    clearTimeout(suggestTimer);
+    const text = input.value.trim();
+    if (text.length < 3) return showList([]);
+    suggestTimer = setTimeout(async () => {
+      suggestAbort?.abort();
+      suggestAbort = new AbortController();
+      try {
+        const url = `${GEOCODER}suggest?f=json&countryCode=USA&maxSuggestions=5&category=Address,Postal,POI&location=${HOUSTON}&text=${encodeURIComponent(text)}`;
+        const data = await fetch(url, { signal: suggestAbort.signal }).then(r => r.json());
+        showList((data.suggestions || []).filter(s => !s.isCollection));
+      } catch (e) { if (e.name !== 'AbortError') showList([]); }
+    }, 250);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (list.hidden) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); highlight((active + 1) % suggestions.length); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); highlight((active - 1 + suggestions.length) % suggestions.length); }
+    else if (e.key === 'Escape') showList([]);
+  });
+  list.addEventListener('mousedown', (e) => {
+    const li = e.target.closest('li'); if (!li) return;
+    e.preventDefault();
+    const s = suggestions[[...list.children].indexOf(li)];
+    input.value = s.text; showList([]); check(s.text, s.magicKey);
+  });
+  input.addEventListener('blur', () => setTimeout(() => showList([]), 150));
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const s = active > -1 ? suggestions[active] : null;
+    if (s) input.value = s.text;
+    showList([]);
+    if (input.value.trim()) check(input.value.trim(), s?.magicKey);
+  });
+
+  function showResult(html) { result.innerHTML = html; result.hidden = false; }
+  function clearResult() {
+    result.hidden = true; result.innerHTML = ''; input.value = '';
+    pin?.remove(); pin = null;
+    setView(current);
+  }
+  result.addEventListener('click', (e) => { if (e.target.closest('.clear')) clearResult(); });
+
+  async function check(text, magicKey) {
+    showResult('<div class="msg">Looking up address…</div>');
+    let cand;
+    try {
+      const url = `${GEOCODER}findAddressCandidates?f=json&countryCode=USA&maxLocations=1&outFields=Match_addr,Addr_type&location=${HOUSTON}`
+        + `&SingleLine=${encodeURIComponent(text)}` + (magicKey ? `&magicKey=${encodeURIComponent(magicKey)}` : '');
+      cand = (await fetch(url).then(r => r.json())).candidates?.[0];
+    } catch {
+      return showResult(`<div class="msg">Couldn't reach the address lookup. Check your connection and try again.</div><button class="clear" type="button">Clear</button>`);
+    }
+    if (!cand || cand.score < 80) {
+      return showResult(`<div class="msg">No match found for “${esc(text)}”. Try adding the city and ZIP code.</div><button class="clear" type="button">Clear</button>`);
+    }
+    const pt = [cand.location.x, cand.location.y];
+    const in119 = inDistrict(pt, window.TX18_119), in120 = inDistrict(pt, window.TX18_120);
+    const type = cand.attributes?.Addr_type || '';
+    const exact = ['PointAddress', 'Subaddress'].includes(type);
+    const area = ['Postal', 'PostalExt', 'Locality', 'Neighborhood', 'District', 'City', 'Region'].includes(type);
+    const badge = (on) => `<span class="badge ${on ? 'in' : 'out'}">${on ? 'Inside TX-18' : 'Outside'}</span>`;
+    showResult(`
+      <div class="addr">${esc(cand.attributes?.Match_addr || cand.address)}</div>
+      <div class="row"><span class="swatch s119"></span><span class="name">119th Congress <small style="color:var(--muted)">· current</small></span>${badge(in119)}</div>
+      <div class="row"><span class="swatch s120"></span><span class="name">120th Congress <small style="color:var(--muted)">· from Jan 2027</small></span>${badge(in120)}</div>
+      ${area ? '<div class="note">This matched an area (like a ZIP code or city), not a street address, so the pin is only its center point. Enter a full street address for a reliable answer.</div>'
+        : !exact ? '<div class="note">Location is estimated along the street. Addresses very close to a boundary line may need confirming with the county elections office.</div>' : ''}
+      <button class="clear" type="button">Clear</button>`);
+    const latlng = [pt[1], pt[0]];
+    pin?.remove();
+    pin = L.marker(latlng, { icon: L.divIcon({ className: '', html: '<div class="pin"></div>', iconSize: [18, 18] }), keyboard: false }).addTo(map);
+    map.fitBounds(L.latLng(latlng).toBounds(2500), { ...fitPadding(), maxZoom: 14 });
+  }
 
   setLabels(params.get('labels') !== '0');
   setView(params.get('view') || 'both');
